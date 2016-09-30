@@ -7,55 +7,60 @@ except ImportError:
 
 import requests
 
+from settings import ALL_FIELDS, LIST_FIELDS, DIRECT_FIELDS
+
 class TokenMissingException(IOError):
     """No token has been defined for making API requests"""
 
 
+class Struct(object):
+    def __init__(self, **params):
+        self.__dict__.update(params)
+
 class Query(object):
-    def __init__(self):
-        self.all_terms = None
-        self.some_terms = None
-        self.phrase = None
-        self.exclude = None
-        self.site_type = None
-        self.language = None
-        self.site = None
-        self.title = None
-        self.body_text = None
-        self.is_first = None
+    def __init__(self, **kwargs):
+        map(lambda name: setattr(self, name, kwargs.get(name, None)), ALL_FIELDS)
+
+    def __setattr__(self, name, value):
+        if name in LIST_FIELDS and isinstance(value, basestring):
+            # They're called list fields for a reason, we'll assume they're lists to reduce redundancy
+            value = [value]
+        super(Query, self).__setattr__(name, value)
+
+    def list_string(self, field):
+        """A method for generating partial query strings of fields that may be lists
+        """
+        return "(" + " OR ".join("%s:%s" % (field, value) for value in getattr(self, field)) + ")"
+
+    def direct_string(self, field):
+        """A method for generating partial query strings of fields that only have a single value
+        """
+        return "%s:%s" % (field, getattr(self, field))
 
     def query_string(self):
         qs = []
         if self.all_terms:
-            qs.append(" AND ".join(self.all_terms))
+            qs.append(self.all_terms)
+        if self.exact_phrase:
+            qs.append('"%s"' % self.exact_phrase)
         if self.some_terms:
-            qs.append(" OR ".join(self.some_terms))
-        if self.phrase:
-            qs.append('"%s"' % self.phrase)
+            qs.append("(" + self.some_terms.replace(" ", " OR ") + ")")
         if self.exclude:
-            qs.append("-(%s)" % self.exclude)
-        if self.site_type:
-            if type(self.site_type) is list:
-                qs.append(" OR ".join("site_type:%s" % site_type for site_type in self.site_type))
-            else:
-                qs.append("site_type:%s" % self.site_type)
-        if self.language:
-            if type(self.language) is list:
-                qs.append(" OR ".join("language:%s" % language for language in self.language))
-            else:
-                qs.append("language:%s" % self.language)
-        if self.site:
-            if type(self.site) is list:
-                qs.append(" OR ".join("site:%s" % site for site in self.site))
-            else:
-                qs.append("site:%s" % self.site)
-        if self.title:
-            qs.append("title:%s" % self.title)
-        if self.body_text:
-            qs.append("text:%s" % self.body_text)
+            qs.append("-%s" % self.exclude)
         if self.is_first:
             qs.append("is_first:true")
-        return " AND ".join("(%s)" % term for term in qs)
+        if self.thread_title:
+            qs.append("thread.title:(%s)" % self.thread_title)
+        if self.thread_section_title:
+            qs.append("thread.section_title:(%s)" % self.thread_section_title)
+        if self.language:
+            qs.append("language:(%s)" % self.language)
+        if self.thread_country:
+            qs.append("thread.country:%s" % self.thread_country)
+        # For anything fitting repetitive query structures, it will be automatically handled here
+        qs.extend(map(self.direct_string, filter(lambda x: getattr(self, x), DIRECT_FIELDS)))
+        qs.extend(map(self.list_string, filter(lambda x: getattr(self, x), LIST_FIELDS)))
+        return " ".join(term for term in qs)
 
     def __str__(self):
         return self.query_string()
@@ -101,46 +106,27 @@ class Response(object):
             self.next_ts = response.next_ts
 
 
-class Thread(object):
+class Thread(Struct):
     """Information about the thread to which the post belongs
     """
 
-    def __init__(self, thread):
-        self.uuid = thread["uuid"]
-        self.url = thread["url"]
-        self.site_full = thread["site_full"]
-        self.site = thread["site"]
+    def __init__(self, **thread):
+        super(Thread, self).__init__(**thread)
         self.site_section = thread.get("site_section")
         self.section_title = thread.get("section_title")
-        self.title = thread["title"]
         self.title_full = thread.get("title_full", self.title)
-        self.published = thread["published"]
         self.published_parsed = parse_iso8601(thread["published"])
-        self.replies_count = thread["replies_count"]
-        self.participants_count = thread["participants_count"]
-        self.site_type = thread["site_type"]
         self.country = thread.get("country")
-        self.spam_score = thread["spam_score"]
-        self.main_image = thread["main_image"]
-        self.performance_score = thread["performance_score"]
 
 
-class Post(object):
+class Post(Struct):
     """Convenience class for post properties
     """
 
-    def __init__(self, post):
-        self.uuid = post["uuid"]
-        self.url = post["url"]
-        self.title = post["title"]
-        self.author = post["author"]
-        self.text = post["text"]
-        self.published = post["published"]
+    def __init__(self, **post):
+        super(Post, self).__init__(**post)
         self.published_parsed = parse_iso8601(post["published"])
-        self.crawled = post["crawled"]
         self.crawled_parsed = parse_iso8601(post["crawled"])
-        self.ord_in_thread = post["ord_in_thread"]
-        self.language = post["language"]
         self.external_links = post.get("external_links")
         self.persons = post["entities"]["persons"]
         self.locations = post["entities"]["locations"]
